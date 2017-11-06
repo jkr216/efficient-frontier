@@ -1,0 +1,230 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup, include = FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(timetk)
+```
+
+
+Three assets build and visualize the efficient frontier
+
+First, we need three assets, mean returns, variances, co-variances.
+
+```{r}
+# The symbols vector holds our tickers. 
+symbols <- c("GOOG", "JPM", "SBUX")
+
+# The prices object will hold our raw price data throughout this book.
+prices <- 
+  getSymbols(symbols, src = 'yahoo', from = "2012-01-01", 
+             auto.assign = TRUE, warnings = FALSE) %>% 
+  map(~Ad(get(.))) %>% 
+  reduce(merge) %>%
+  `colnames<-`(symbols)
+
+asset_returns_long <- 
+  prices %>% 
+  to.monthly(indexAt = "last", OHLC = FALSE) %>% 
+  tk_tbl(preserve_index = TRUE, rename_index = "date") %>%
+  gather(asset, returns, -date) %>% 
+  group_by(asset) %>%  
+  mutate(returns = (log(returns) - log(lag(returns)))) %>% 
+  na.omit() 
+
+cov_calcs <- 
+  asset_returns_long %>% 
+  spread(asset, returns) %>% 
+  summarise(cov_goog_jpm = cov(GOOG, JPM),
+            cov_goog_sbux = cov(GOOG, SBUX),
+            cov_sbux_jpm = cov(SBUX, JPM)) %>%
+  gather(pair, covariance)
+  
+mean_var_cov <- 
+  asset_returns_long %>%
+  group_by(asset) %>% 
+  summarise(mean = mean(returns),
+            var = var(returns),
+            sd = sqrt(var)) %>% 
+  mutate(pair = cov_test$pair, 
+         covariance = cov_test$covariance)
+  
+```
+
+
+
+```{r}
+
+mean_var_cov %>%
+  group_by(asset) %>% 
+  ggplot(aes(x = sd, y = mean, color = asset)) +
+  geom_point()
+```
+
+
+```{r}
+
+mean_vector <- 
+  mean_var_cov %>% 
+  select(asset, mean) %>%
+  spread(asset, mean) %>% 
+  slice(1) %>% 
+  unlist(., use.names=FALSE)
+
+
+covariance_matrix <- 
+  asset_returns_long %>%
+  spread(asset, returns) %>% 
+  select(-date) %>% 
+  cov()
+
+top_matrix <- cbind(2 * covariance_matrix, rep(1, 3))
+botttom_vector <- c(rep(1, 3), 0)
+Am.mat <-  rbind(top_matrix, botttom_vector)
+b.vec <- c(rep(0, 3), 1)
+
+z.m.mat <- solve(Am.mat) %*% b.vec
+
+min_w_vec <- z.m.mat[1:3,1]
+
+min_weights <- 
+  dplyr::as_tibble(z.m.mat) %>% 
+  slice(-4) %>% 
+  mutate(asset = symbols) %>% 
+  rename(min_weight = V1) %>% 
+  select(asset, min_weight) %>% 
+  spread(asset, min_weight) %>% 
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+glob_min_return <- crossprod(mean_vector, min_weights)
+glob_min_variance <- t(min_weights) %*% covariance_matrix %*% min_weights
+glob_min_sd <- sqrt(t(min_weights) %*% covariance_matrix %*% min_weights)
+```
+
+```{r}
+mean_sd_global_added <- 
+  mean_var_cov %>% 
+  select(-pair, -covariance) %>% 
+  add_row(asset = "glob_min", 
+          mean = as.vector(glob_min_return), 
+          var = as.vector(glob_min_variance), 
+          sd = as.vector(glob_min_sd))
+
+mean_sd_global_added
+```
+
+```{r}
+mean_sd_global_added %>% 
+  ggplot(aes(x = sd, y = mean, color = asset)) + 
+  geom_point
+```
+
+let's find an efficient or minimum variance portfolio for a portfolio with the same return as JPM. We don't want to use SBUX.
+
+```{r}
+mean_vector[2]
+top_matrix_JPM <- cbind(2 * covariance_matrix, mean_vector, rep(1, 3))
+middle_vector_JPM <-c(mean_vector, 0, 0)
+bottom_vector_JPM = c(rep(1, 3), 0, 0)
+a_matrix_JPM <- rbind(top_matrix_JPM, middle_vector_JPM, bottom_vector_JPM)
+JPM_vector = c(rep(0, 3), mean_vector[2], 1)
+
+z_mat_JPM <- solve(a_matrix_JPM) %*% JPM_vector
+weights_vector_JPM <- z_mat_JPM[1:3,]
+weights_vector_JPM
+
+
+JPM_equiv_return <- as.numeric(crossprod(weights_vector_JPM, mean_vector))
+JPM_equiv_variance <- t(weights_vector_JPM) %*% covariance_matrix %*% weights_vector_JPM
+JPM_equiv_sd <- sqrt(t(weights_vector_JPM) %*% covariance_matrix %*% weights_vector_JPM)
+
+mean_sd_JPM_equiv_added <- 
+  mean_sd_global_added %>%  
+  add_row(asset = "jpm_equiv", 
+          mean = as.vector(JPM_equiv_return), 
+          var = as.vector(JPM_equiv_variance), 
+          sd = as.vector(JPM_equiv_sd))
+```
+
+
+```{r}
+mean_sd_JPM_equiv_added %>% 
+  ggplot(aes(x = sd, y = mean, color = asset)) + 
+  geom_point()
+```
+
+
+let's find an efficient or minimum variance portfolio for a portfolio with the same return as JPM. We don't want to use SBUX.
+
+```{r}
+
+top_matrix_GOOG <- cbind(2 * covariance_matrix, mean_vector, rep(1, 3))
+middle_vector_GOOG <-c(mean_vector, 0, 0)
+bottom_vector_GOOG = c(rep(1, 3), 0, 0)
+a_matrix_GOOG <- rbind(top_matrix_GOOG, middle_vector_GOOG, bottom_vector_GOOG)
+GOOG_vector = c(rep(0, 3), mean_vector[1], 1)
+
+z_mat_GOOG <- solve(a_matrix_GOOG) %*% GOOG_vector
+weights_vector_GOOG <- z_mat_GOOG[1:3,]
+weights_vector_GOOG
+
+
+GOOG_equiv_return <- as.numeric(crossprod(weights_vector_GOOG, mean_vector))
+GOOG_equiv_variance <- t(weights_vector_GOOG) %*% covariance_matrix %*% weights_vector_GOOG
+GOOG_equiv_sd <- sqrt(t(weights_vector_GOOG) %*% covariance_matrix %*% weights_vector_GOOG)
+
+mean_sd_GOOG_equiv_added <- 
+  mean_sd_JPM_equiv_added %>%  
+  add_row(asset = "GOOG_equiv", 
+          mean = as.vector(GOOG_equiv_return), 
+          var = as.vector(GOOG_equiv_variance), 
+          sd = as.vector(GOOG_equiv_sd))
+```
+
+
+```{r}
+mean_sd_GOOG_equiv_added %>% 
+  ggplot(aes(x = sd, y = mean, color = asset)) + 
+  geom_point()
+```
+
+
+```{r}
+a <- seq(from = 1, to = -1, by = -0.1)
+n_a <- length(a)
+
+weights_matrix_eff_front <- matrix(0, n_a, 3)
+
+returns_matrix_eff_front <- rep(0, n_a)
+
+var_matrix_eff_front <- rep(0, n_a)
+
+sd_eff_front <- t(min_weights) %*% covariance_matrix %*% weights_vector_GOOG
+
+for (i in 1:n_a) {
+  weights_matrix_eff_front[i, ] = a[i] * min_weights + (1-a[i]) * weights_vector_GOOG
+  returns_matrix_eff_front[i] = a[i] * glob_min_return + (1-a[i]) * GOOG_equiv_return
+  var_matrix_eff_front[i] = a[i]^2 * glob_min_variance + (1-a[i])^2 * GOOG_equiv_variance +
+    2*a[i]*(1-a[i])*sd_eff_front
+}
+
+eff_front_returns_vars <- 
+  tibble(returns_matrix_eff_front) %>% 
+  add_column(var = var_matrix_eff_front) %>% 
+  mutate(sd = sqrt(var)) %>% 
+  rename(returns = returns_matrix_eff_front)
+
+```
+
+
+```{r}
+mean_sd_GOOG_equiv_added %>% 
+  ggplot() + 
+  geom_point(aes(x = sd, y = mean, color = asset)) +
+  geom_point(data = eff_front_returns_vars, aes(x = sd, y = returns), color = "pink")
+```
+
